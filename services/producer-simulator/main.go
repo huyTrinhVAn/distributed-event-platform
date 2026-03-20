@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 
 	"distributed-event-platform/pkg/config"
+	kafkawrapper "distributed-event-platform/pkg/kafka"
 	"distributed-event-platform/pkg/logger"
 	"distributed-event-platform/pkg/model"
 
@@ -13,7 +15,13 @@ import (
 
 func main() {
 	cfg := config.Load()
+
+	var producer kafkawrapper.Producer
+	producer = kafkawrapper.NewSegmentioProducer(cfg.KafkaBroker, cfg.KafkaTopicRaw)
+	defer producer.Close()
+
 	r := gin.Default()
+
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "ok",
@@ -21,6 +29,7 @@ func main() {
 			"env":     cfg.AppEnv,
 		})
 	})
+
 	r.POST("/publish", func(c *gin.Context) {
 		event := model.Event{
 			EventID:       "evt-001",
@@ -42,17 +51,35 @@ func main() {
 			},
 		}
 
-		logger.Info("created test event in /publish")
+		message, err := json.Marshal(event)
+		if err != nil {
+			logger.Error("failed to marshal event: " + err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "failed to marshal event",
+			})
+			return
+		}
+
+		if err := producer.Publish(message, event.PartitionKey); err != nil {
+			logger.Error("failed to publish event to kafka: " + err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "failed to publish event to kafka",
+			})
+			return
+		}
+
+		logger.Info("published event to Kafka topic: " + cfg.KafkaTopicRaw)
 
 		c.JSON(http.StatusOK, gin.H{
-			"message": "event created successfully",
+			"message": "event published successfully",
+			"topic":   cfg.KafkaTopicRaw,
 			"event":   event,
 		})
 	})
+
 	logger.Info("starting producer-simulator on port " + cfg.AppPort)
 
 	if err := r.Run(":" + cfg.AppPort); err != nil {
 		logger.Error("failed to start server: " + err.Error())
 	}
-
 }
